@@ -445,6 +445,19 @@ def _is_bad_singleton(ln: str) -> bool:
     return False
 
 
+def _compact_ocr_token_text(text: str) -> str:
+    """
+    Compacta separaciones OCR raras dentro de palabras:
+    ej: "C FACTU RA" -> "CFACTURA", "Emisi ón" -> "Emisión" (aprox. por regex flexible posterior).
+    """
+    s = text or ""
+    prev = None
+    while prev != s:
+        prev = s
+        s = re.sub(r"\b([A-Za-zÁÉÍÓÚÜÑ])\s+(?=[A-Za-zÁÉÍÓÚÜÑ]\b)", r"\1", s)
+    return s
+
+
 def parse_formato_ama(text: str):
     """
     A.M.A - Asociación Mendocina de Anestesiología
@@ -843,16 +856,25 @@ def parse_formato_afip_original_block(text: str):
         return None
 
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
-    t = " ".join(lines)
+    t = _compact_ocr_token_text(" ".join(lines))
 
-    m = re.search(r"Punto\s*de\s*Venta\s*:\s*(\d+)\s*Comp\.\s*Nro\s*:\s*(\d+)", t, re.IGNORECASE)
+    m = re.search(
+        r"Punto\s*de\s*Venta\s*:\s*(\d+)\s*(?:Comp\.?\s*)?(?:Nro|N°|Nº|No|N0)\s*:\s*(\d+)",
+        t,
+        re.IGNORECASE
+    )
     if not m:
         return None
     nro = f"{strip_leading_zeros(m.group(1))}-{strip_leading_zeros(m.group(2))}"
 
     razon = ""
     for ln in lines:
-        rm = re.search(r"Raz[oó]n\s+Social\s*:\s*(.+?)\s+Fecha\s+de\s+Emisi[oó]n\s*:", ln, re.IGNORECASE)
+        ln_norm = _compact_ocr_token_text(ln)
+        rm = re.search(
+            r"Raz(?:[oóó0]|6)n\s+Social\s*:\s*(.+?)\s+Fecha\s+de\s+Emisi[oóó0]n\s*:",
+            ln_norm,
+            re.IGNORECASE
+        )
         if rm:
             razon = rm.group(1).strip()
             break
@@ -860,7 +882,8 @@ def parse_formato_afip_original_block(text: str):
     if not razon:
         idx = None
         for i, ln in enumerate(lines):
-            if ln.upper() in ("ORIGINAL", "DUPLICADO", "TRIPLICADO"):
+            ln_up = _compact_ocr_token_text(ln).upper().replace(" ", "")
+            if ln_up in ("ORIGINAL", "DUPLICADO", "TRIPLICADO"):
                 idx = i
                 break
         if idx is not None:
@@ -878,16 +901,24 @@ def parse_formato_afip_original_block(text: str):
 
     fecha = None
     for ln in lines:
-        fm = re.search(r"Fecha\s+de\s+Emisi[oó]n\s*:\s*(\d{1,2}/\d{1,2}/\d{4})", ln, re.IGNORECASE)
+        ln_norm = _compact_ocr_token_text(ln)
+        fm = re.search(r"Fecha\s+de\s+Emisi[oóó0]n\s*:\s*(\d{1,2}/\d{1,2}/\d{4})", ln_norm, re.IGNORECASE)
         if fm:
-            fecha = parse_date_flexible(fm.group(1))
+            try:
+                fecha = parse_date_flexible(fm.group(1))
+            except Exception:
+                fecha = None
             break
 
     periodo = None
     for ln in lines:
-        pm = re.search(r"Per[ií]odo\s+Facturado\s+Desde\s*:\s*(\d{1,2}/\d{1,2}/\d{4})", ln, re.IGNORECASE)
+        ln_norm = _compact_ocr_token_text(ln)
+        pm = re.search(r"Per[ií]odo\s+Facturado\s+Desde\s*:\s*(\d{1,2}/\d{1,2}/\d{4})", ln_norm, re.IGNORECASE)
         if pm:
-            periodo = parse_date_flexible(pm.group(1))
+            try:
+                periodo = parse_date_flexible(pm.group(1))
+            except Exception:
+                periodo = None
             break
 
     domicilio = ""
@@ -948,94 +979,6 @@ def parse_formato_afip_original_block(text: str):
         "periodo": periodo,
         "total": float(total)
     }
-
-
-def parse_formato_san_luis(text: str):
-    if not text:
-        return None
-
-    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
-    joined = " ".join(lines)
-
-    nro = None
-    for ln in lines:
-        m = re.search(r"Punto\s*de\s*venta\s*:\s*(\d+)\s+Comp\.\s*Nro\s*:\s*(\d+)", ln, re.IGNORECASE)
-        if m:
-            nro = f"{strip_leading_zeros(m.group(1))}-{strip_leading_zeros(m.group(2))}"
-            break
-    if not nro:
-        return None
-
-    proveedor = ""
-    domicilio_raw = ""
-    for ln in lines:
-        if re.search(r"Raz[oó]n\s*social\s*:", ln, re.IGNORECASE) and re.search(r"Domicilio\s*:", ln, re.IGNORECASE):
-            rm = re.search(r"Raz[oó]n\s*social\s*:\s*(.*?)\s+Domicilio\s*:\s*(.*)$", ln, re.IGNORECASE)
-            if rm:
-                proveedor = re.sub(r"\s+", " ", rm.group(1).strip())
-                domicilio_raw = re.sub(r"\s+", " ", rm.group(2).strip())
-            break
-    if not proveedor:
-        return None
-
-    domicilio, localidad, provincia = split_domicilio_localidad_provincia(domicilio_raw)
-
-    fecha = None
-    for ln in lines:
-        fm = re.search(r"Fecha\s*de\s*emisi[oó]n\s*:\s*(\d{1,2}/\d{1,2}/\d{4})", ln, re.IGNORECASE)
-        if fm:
-            fecha = parse_date_flexible(fm.group(1))
-            break
-
-    cuit = ""
-    iibb = ""
-    for ln in lines:
-        if re.search(r"\bCuit\s*:", ln, re.IGNORECASE):
-            cm = re.search(r"\bCuit\s*:\s*([0-9]{11})\b", ln, re.IGNORECASE)
-            if cm:
-                cuit = format_cuit(cm.group(1))
-            im = re.search(r"Ingresos\s*brutos\s*:\s*(.+)$", ln, re.IGNORECASE)
-            if im:
-                iibb = im.group(1).strip()
-                iibb = re.split(r"\s+Periodo\s+facturado|\s+Importe\s+total|\s+CAE\b", iibb, flags=re.IGNORECASE)[0].strip()
-            break
-
-    periodo = None
-    for ln in lines:
-        pm = re.search(
-            r"Periodo\s+facturado\s+desde\s*:\s*(\d{1,2}/\d{1,2}/\d{4})\s+Hasta\s*:\s*(\d{1,2}/\d{1,2}/\d{4})",
-            ln, re.IGNORECASE
-        )
-        if pm:
-            periodo = parse_date_flexible(pm.group(1))
-            break
-
-    total = None
-    for ln in lines:
-        tm = re.search(r"Importe\s*total\s*:\s*([0-9\.\,]+)", ln, re.IGNORECASE)
-        if tm:
-            total = monto_ar_to_float(tm.group(1))
-            break
-    if total is None:
-        tm2 = re.search(r"Importe\s*Total\s*:\s*([0-9\.\,]+)", joined, re.IGNORECASE)
-        if tm2:
-            total = monto_ar_to_float(tm2.group(1))
-    if total is None or total <= 0:
-        return None
-
-    return {
-        "nro": nro,
-        "razon": proveedor,
-        "cuit": cuit,
-        "iibb": iibb,
-        "domicilio": domicilio,
-        "localidad": localidad,
-        "provincia": provincia or PROVINCIA_FIJA,
-        "fecha": fecha,
-        "periodo": periodo,
-        "total": float(total)
-    }
-
 
 
 def parse_formato_san_luis(text: str):
