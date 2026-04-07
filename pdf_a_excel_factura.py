@@ -662,6 +662,119 @@ def parse_formato_mk_g3(text: str):
     }
 
 
+def parse_formato_mendosalud(text: str):
+    """
+    MENDOSALUD - Factura B (formato específico).
+    Detección con anclas combinadas para evitar colisiones.
+    """
+    if not text:
+        return None
+
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    raw = "\n".join(lines)
+    up = re.sub(r"\s+", " ", raw).upper()
+
+    if "MENDOSALUD" not in up:
+        return None
+    if "FACTURA B" not in up:
+        return None
+    if not re.search(r"ING\.?\s*BRUTOS", up, re.IGNORECASE):
+        return None
+    if not re.search(r"NRO\.?\s*ESTAB", up, re.IGNORECASE):
+        return None
+    if "CAE VTO" not in up:
+        return None
+
+    m = re.search(r"Factura\s*B\s*(?:N[°º]|NRO)\s*:\s*(\d+)\s*-\s*(\d+)", raw, re.IGNORECASE)
+    if not m:
+        return None
+    nro = f"{strip_leading_zeros(m.group(1))}-{strip_leading_zeros(m.group(2))}"
+
+    razon = "MENDOSALUD"
+
+    cuit = ""
+    cm = re.search(
+        r"MENDOSALUD[\s\S]{0,120}?C\.?\s*U\.?\s*I\.?\s*T\.?\s*:\s*([0-9][0-9\-\.\s]{9,16}[0-9])",
+        raw,
+        re.IGNORECASE
+    )
+    if cm:
+        cuit = format_cuit(cm.group(1))
+
+    iibb = ""
+    im = re.search(r"ING\.?\s*BRUTOS\.?\s*:\s*([0-9\.\-]+)", raw, re.IGNORECASE)
+    if im:
+        iibb = im.group(1).strip()
+
+    fecha = None
+    fm = re.search(r"\bFecha\s*:\s*(\d{1,2}/\d{1,2}/\d{4})", raw, re.IGNORECASE)
+    if fm:
+        try:
+            fecha = parse_date_flexible(fm.group(1))
+        except Exception:
+            fecha = None
+
+    domicilio = ""
+    localidad = ""
+    provincia = PROVINCIA_FIJA
+
+    for ln in lines[:35]:
+        if re.search(r"ING\.?\s*BRUTOS", ln, re.IGNORECASE):
+            base = re.split(r"ING\.?\s*BRUTOS", ln, flags=re.IGNORECASE)[0].strip(" -,")
+            base = re.sub(r"\(\d{4,5}\)", "", base).strip(" -,")
+            partes = [p.strip(" .,-") for p in base.split(",") if p.strip(" .,-")]
+            if partes:
+                domicilio = partes[0]
+                if len(partes) >= 3:
+                    localidad = f"{partes[1]}, {partes[2]}"
+                elif len(partes) >= 2:
+                    localidad = partes[1]
+                if len(partes) >= 4:
+                    prov_raw = partes[3].upper()
+                    if prov_raw in ("MZA", "MENDOZA"):
+                        provincia = "Mendoza"
+                    else:
+                        provincia = partes[3]
+            break
+
+    total = None
+    for i, ln in enumerate(lines):
+        if re.search(r"NETO\s+EXENTO", ln, re.IGNORECASE) and re.search(r"TOTAL", ln, re.IGNORECASE):
+            for j in range(i + 1, min(i + 4, len(lines))):
+                if "$" in lines[j]:
+                    nums = re.findall(r"\$\s*([0-9\.\,]+)", lines[j])
+                    if nums:
+                        total = monto_to_float_any(nums[-1])
+                        break
+            if total is not None and total > 0:
+                break
+
+    if total is None or total <= 0:
+        tm = re.search(r"\bTOTAL\b[^\n]*\n[^\n]*\$\s*([0-9\.\,]+)\s*$", raw, re.IGNORECASE)
+        if tm:
+            total = monto_to_float_any(tm.group(1))
+
+    if total is None or total <= 0:
+        amts = _find_money_amounts_any(lines)
+        total = max(amts) if amts else None
+
+    if total is None or total <= 0:
+        return None
+
+    return {
+        "nro": nro,
+        "razon": razon,
+        "cuit": cuit,
+        "iibb": iibb,
+        "domicilio": domicilio,
+        "localidad": localidad,
+        "provincia": provincia or PROVINCIA_FIJA,
+        "fecha": fecha,
+        "periodo": None,
+        "total": float(total)
+    }
+
+
 def parse_formato_hospital_universitario(text: str):
     """
     Hospital Universitario - formato "C FACTURA 0234-00002977"
@@ -1389,6 +1502,14 @@ def extraer_campos(pdf_path: str, error_dir: Path, pdf_obj: Path, debug: bool = 
         if debug:
             print("PARSER -> MK_G3")
             save_parse_debug(error_dir, pdf_obj, "MK_G3", campos, text)
+        return campos
+
+    # ✅ MENDOSALUD (específico, antes de genéricos)
+    campos = parse_formato_mendosalud(text)
+    if campos:
+        if debug:
+            print("PARSER -> MENDOSALUD")
+            save_parse_debug(error_dir, pdf_obj, "MENDOSALUD", campos, text)
         return campos
 
     # ✅ Hospital Universitario
