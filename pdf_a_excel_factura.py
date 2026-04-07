@@ -1112,6 +1112,126 @@ def parse_formato_san_luis(text: str):
         "total": float(total)
     }
 
+
+def parse_formato_hospital_ramon_carrillo(text: str):
+    """
+    ENTE HOSPITAL RAMON CARRILLO (formato específico).
+    Detección conservadora para evitar colisiones con parsers genéricos.
+    """
+    if not text:
+        return None
+
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    raw = "\n".join(lines)
+    up = re.sub(r"\s+", " ", raw).upper()
+
+    # Señales específicas y combinadas del formato
+    if "ENTE HOSPITAL RAMON CARRILLO" not in up:
+        return None
+    if not re.search(r"\bB\s*FACTURA\b", up):
+        return None
+    if not re.search(r"\bN[UÚ]MERO\s*:", raw, re.IGNORECASE):
+        return None
+    if not re.search(r"\bC\.?\s*U\.?\s*I\.?\s*T\.?\s*:", raw, re.IGNORECASE):
+        return None
+    if "F.VTO:" not in up:
+        return None
+
+    # Número: Numero/Número: 00003-00001755 -> 3-1755
+    m = re.search(r"\bN[UÚ]MERO\s*:\s*(\d+)\s*-\s*(\d+)", raw, re.IGNORECASE)
+    if not m:
+        return None
+    nro = f"{strip_leading_zeros(m.group(1))}-{strip_leading_zeros(m.group(2))}"
+
+    razon = "ENTE HOSPITAL RAMON CARRILLO"
+
+    # Fecha
+    fecha = None
+    fm = re.search(r"\bFecha\s*:\s*(\d{1,2}/\d{1,2}/\d{4})", raw, re.IGNORECASE)
+    if fm:
+        try:
+            fecha = parse_date_flexible(fm.group(1))
+        except Exception:
+            fecha = None
+
+    # CUIT emisor (el primero junto al bloque del emisor)
+    cuit = ""
+    cm = re.search(r"\bC\.?\s*U\.?\s*I\.?\s*T\.?\s*:\s*([0-9][0-9\-\.\s]{9,16}[0-9])", raw, re.IGNORECASE)
+    if cm:
+        cuit = format_cuit(cm.group(1))
+
+    # IIBB
+    iibb = ""
+    im = re.search(r"Ing\.?\s*Brutos\s*:\s*([A-Za-z0-9\.\-]+)", raw, re.IGNORECASE)
+    if im:
+        iibb = im.group(1).strip()
+
+    # Domicilio/localidad/provincia del emisor
+    domicilio = ""
+    localidad = ""
+    provincia = PROVINCIA_FIJA
+
+    for i, ln in enumerate(lines):
+        if "ENTE HOSPITAL RAMON CARRILLO" in ln.upper():
+            if i + 1 < len(lines):
+                dom_ln = re.sub(r"\s+", " ", lines[i + 1]).strip()
+                dm = re.match(r"(.+?)\s*-\s*([A-Za-zÁÉÍÓÚÜÑáéíóúüñ ]+)$", dom_ln)
+                if dm:
+                    domicilio = dm.group(1).strip(" -,")
+                    localidad = dm.group(2).strip(" -,")
+                else:
+                    domicilio = dom_ln.strip(" -,")
+
+            if i + 2 < len(lines):
+                prov_ln = re.sub(r"\s+", " ", lines[i + 2]).strip()
+                pm = re.search(r"\)\s*([A-Za-zÁÉÍÓÚÜÑáéíóúüñ ]+?)\s+Argentina\b", prov_ln, re.IGNORECASE)
+                if pm:
+                    provincia = pm.group(1).strip(" -,")
+            break
+
+    # Período (conservador): inferir desde Observaciones o descripción
+    periodo = None
+    meses = {
+        "ENERO": 1, "FEBRERO": 2, "MARZO": 3, "ABRIL": 4, "MAYO": 5, "JUNIO": 6,
+        "JULIO": 7, "AGOSTO": 8, "SEPTIEMBRE": 9, "SETIEMBRE": 9,
+        "OCTUBRE": 10, "NOVIEMBRE": 11, "DICIEMBRE": 12
+    }
+    pmatch = re.search(
+        r"\b(" + "|".join(meses.keys()) + r")\s+(20\d{2})\b",
+        raw.upper(),
+        re.IGNORECASE
+    )
+    if pmatch:
+        mm = meses.get(pmatch.group(1).upper())
+        yy = int(pmatch.group(2))
+        if mm:
+            periodo = datetime(yy, mm, 1)
+
+    # Total
+    total = None
+    tm = re.search(r"\bTotal\s*:\s*\$?\s*([0-9\.,]+)", raw, re.IGNORECASE)
+    if tm:
+        total = monto_to_float_any(tm.group(1))
+    if total is None or total <= 0:
+        amts = _find_money_amounts_any(lines)
+        total = max(amts) if amts else None
+    if total is None or total <= 0:
+        return None
+
+    return {
+        "nro": nro,
+        "razon": razon,
+        "cuit": cuit,
+        "iibb": iibb,
+        "domicilio": domicilio,
+        "localidad": localidad,
+        "provincia": provincia or PROVINCIA_FIJA,
+        "fecha": fecha,
+        "periodo": periodo,
+        "total": float(total)
+    }
+
+
 def parse_formato_afip(text: str):
     if not text:
         return None
@@ -1299,6 +1419,14 @@ def extraer_campos(pdf_path: str, error_dir: Path, pdf_obj: Path, debug: bool = 
         if debug:
             print("PARSER -> SAN_LUIS")
             save_parse_debug(error_dir, pdf_obj, "SAN_LUIS", campos, text)
+        return campos
+
+    # ✅ Hospital Ramón Carrillo (específico, antes de genéricos)
+    campos = parse_formato_hospital_ramon_carrillo(text)
+    if campos:
+        if debug:
+            print("PARSER -> HOSPITAL_RAMON_CARRILLO")
+            save_parse_debug(error_dir, pdf_obj, "HOSPITAL_RAMON_CARRILLO", campos, text)
         return campos
 
     campos = parse_formato_afip(text)
