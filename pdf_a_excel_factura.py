@@ -1115,7 +1115,108 @@ def parse_formato_san_luis(text: str):
     raw = "\n".join(lines)
     up = re.sub(r"\s+", " ", raw).upper()
 
-    # señales claras del formato
+    # -------- Variante histórica AFIP/San Luis (regresión) --------
+    # Ejemplo: "Punto de venta ... Comp. Nro ... Razón social ... Domicilio ..."
+    if re.search(r"Punto\s*de\s*venta\s*:", raw, re.IGNORECASE) and re.search(
+        r"Comp\.?\s*Nro\s*:", raw, re.IGNORECASE
+    ):
+        m = re.search(
+            r"Punto\s*de\s*venta\s*:\s*(\d+)\s+Comp\.?\s*Nro\s*:\s*(\d+)",
+            raw,
+            re.IGNORECASE
+        )
+        if m:
+            nro = f"{strip_leading_zeros(m.group(1))}-{strip_leading_zeros(m.group(2))}"
+
+            razon = ""
+            domicilio_raw = ""
+            rm = re.search(
+                r"Raz[oó]n\s*social\s*:\s*(.*?)\s+Domicilio\s*:\s*(.*?)\s+Fecha\s*de\s*emisi[oó]n\s*:",
+                raw,
+                re.IGNORECASE | re.DOTALL
+            )
+            if rm:
+                razon = re.sub(r"\s+", " ", rm.group(1).strip())
+                domicilio_raw = rm.group(2).strip()
+
+            if razon:
+                domicilio = ""
+                localidad = ""
+                provincia = PROVINCIA_FIJA
+
+                dom_lines = [dl.strip() for dl in domicilio_raw.splitlines() if dl.strip()]
+                if dom_lines:
+                    domicilio = re.sub(r"\s+", " ", dom_lines[0]).strip()
+                if len(dom_lines) > 1:
+                    mloc = re.search(r"^(.+?)\s*,\s*(.+)$", dom_lines[1])
+                    if mloc:
+                        localidad = mloc.group(1).strip()
+                        provincia = mloc.group(2).strip() or PROVINCIA_FIJA
+                    else:
+                        localidad = re.sub(r"\s+", " ", dom_lines[1]).strip()
+
+                if not domicilio:
+                    domicilio, localidad, provincia = split_domicilio_localidad_provincia(
+                        re.sub(r"\s+", " ", domicilio_raw)
+                    )
+
+                fecha = None
+                fm = re.search(r"Fecha\s*de\s*emisi[oó]n\s*:\s*(\d{1,2}/\d{1,2}/\d{4})", raw, re.IGNORECASE)
+                if fm:
+                    try:
+                        fecha = parse_date_flexible(fm.group(1))
+                    except Exception:
+                        fecha = None
+
+                cuit = ""
+                cm = re.search(r"\bCuit\s*:\s*([0-9]{11})\b", raw, re.IGNORECASE)
+                if cm:
+                    cuit = format_cuit(cm.group(1))
+
+                iibb = ""
+                im = re.search(r"Ingresos\s*brutos\s*:\s*(.+)$", raw, re.IGNORECASE | re.MULTILINE)
+                if im:
+                    iibb = im.group(1).strip()
+                    iibb = re.split(
+                        r"\s+Periodo\s+facturado|\s+Importe\s+total|\s+CAE\b",
+                        iibb,
+                        flags=re.IGNORECASE
+                    )[0].strip()
+
+                periodo = None
+                pm = re.search(
+                    r"Periodo\s+facturado\s+desde\s*:\s*(\d{1,2}/\d{1,2}/\d{4})\s+Hasta\s*:\s*(\d{1,2}/\d{1,2}/\d{4})",
+                    raw,
+                    re.IGNORECASE
+                )
+                if pm:
+                    try:
+                        periodo = parse_date_flexible(pm.group(1))
+                    except Exception:
+                        periodo = None
+
+                total = None
+                tm = re.search(r"Importe\s*total\s*:\s*([0-9\.\,]+)", raw, re.IGNORECASE)
+                if tm:
+                    total = monto_ar_to_float(tm.group(1))
+                if total is None or total <= 0:
+                    amts = _find_money_amounts_any(lines)
+                    total = max(amts) if amts else None
+                if total is not None and total > 0:
+                    return {
+                        "nro": nro,
+                        "razon": razon,
+                        "cuit": cuit,
+                        "iibb": iibb,
+                        "domicilio": domicilio,
+                        "localidad": localidad,
+                        "provincia": provincia or PROVINCIA_FIJA,
+                        "fecha": fecha,
+                        "periodo": periodo,
+                        "total": float(total)
+                    }
+
+    # señales claras del formato San Luis REFORSAL
     if "RAZON SOCIAL:" not in up:
         return None
     if "NRO.:" not in up and "NRO :" not in up and "NRO:" not in up:
