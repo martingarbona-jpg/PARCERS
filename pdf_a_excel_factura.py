@@ -664,7 +664,7 @@ def parse_formato_mk_g3(text: str):
 
 def parse_formato_mendosalud(text: str):
     """
-    MENDOSALUD - Factura B (formato específico).
+    Factura B médica (subtipo MENDOSALUD/CODEVI y similares).
     Detección con anclas combinadas para evitar colisiones.
     """
     if not text:
@@ -674,13 +674,13 @@ def parse_formato_mendosalud(text: str):
     raw = "\n".join(lines)
     up = re.sub(r"\s+", " ", raw).upper()
 
-    if "MENDOSALUD" not in up:
-        return None
     if "FACTURA B" not in up:
         return None
     if not re.search(r"ING\.?\s*BRUTOS", up, re.IGNORECASE):
         return None
     if not re.search(r"NRO\.?\s*ESTAB", up, re.IGNORECASE):
+        return None
+    if not re.search(r"NETO\s+EXENTO", up, re.IGNORECASE):
         return None
     if "CAE VTO" not in up:
         return None
@@ -690,16 +690,33 @@ def parse_formato_mendosalud(text: str):
         return None
     nro = f"{strip_leading_zeros(m.group(1))}-{strip_leading_zeros(m.group(2))}"
 
-    razon = "MENDOSALUD"
+    # Bloque emisor (arriba) vs bloque cliente (debajo de "Razón social:")
+    idx_cliente = None
+    for i, ln in enumerate(lines):
+        if re.search(r"Raz[oó]n\s+social\s*:", ln, re.IGNORECASE):
+            idx_cliente = i
+            break
+    header_lines = lines if idx_cliente is None else lines[:idx_cliente]
+    header_raw = "\n".join(header_lines)
 
+    razon = "MENDOSALUD"
     cuit = ""
-    cm = re.search(
-        r"MENDOSALUD[\s\S]{0,120}?C\.?\s*U\.?\s*I\.?\s*T\.?\s*:\s*([0-9][0-9\-\.\s]{9,16}[0-9])",
-        raw,
-        re.IGNORECASE
-    )
-    if cm:
-        cuit = format_cuit(cm.group(1))
+
+    for ln in header_lines:
+        cm_line = re.search(r"(.*?)\bC\.?\s*U\.?\s*I\.?\s*T\.?\s*:\s*([0-9][0-9\-\.\s]{9,16}[0-9])", ln, re.IGNORECASE)
+        if cm_line:
+            pref = re.sub(r"\b(COD\.?\s*\d+|ORIGINAL|DUPLICADO|TRIPLICADO)\b", "", cm_line.group(1), flags=re.IGNORECASE)
+            pref = re.sub(r"\b(B|A|C)\s*FACTURA\b", "", pref, flags=re.IGNORECASE)
+            pref = re.sub(r"\s+", " ", pref).strip(" -,:")
+            if pref and not _is_bad_singleton(pref):
+                razon = pref
+            cuit = format_cuit(cm_line.group(2))
+            break
+
+    if not cuit:
+        cm = re.search(r"\bC\.?\s*U\.?\s*I\.?\s*T\.?\s*:\s*([0-9][0-9\-\.\s]{9,16}[0-9])", header_raw, re.IGNORECASE)
+        if cm:
+            cuit = format_cuit(cm.group(1))
 
     iibb = ""
     im = re.search(r"ING\.?\s*BRUTOS\.?\s*:\s*([0-9\.\-]+)", raw, re.IGNORECASE)
@@ -722,12 +739,13 @@ def parse_formato_mendosalud(text: str):
         if re.search(r"ING\.?\s*BRUTOS", ln, re.IGNORECASE):
             base = re.split(r"ING\.?\s*BRUTOS", ln, flags=re.IGNORECASE)[0].strip(" -,")
             base = re.sub(r"\(\d{4,5}\)", "", base).strip(" -,")
+            base = re.sub(r"\b(COD\.?\s*\d+|ORIGINAL|DUPLICADO|TRIPLICADO)\b", "", base, flags=re.IGNORECASE).strip(" -,")
             partes = [p.strip(" .,-") for p in base.split(",") if p.strip(" .,-")]
-            if partes:
+            if len(partes) >= 2:
                 domicilio = partes[0]
                 if len(partes) >= 3:
                     localidad = f"{partes[1]}, {partes[2]}"
-                elif len(partes) >= 2:
+                else:
                     localidad = partes[1]
                 if len(partes) >= 4:
                     prov_raw = partes[3].upper()
@@ -735,7 +753,17 @@ def parse_formato_mendosalud(text: str):
                         provincia = "Mendoza"
                     else:
                         provincia = partes[3]
+            elif len(partes) == 1:
+                tokens = partes[0].split()
+                if len(tokens) >= 2 and re.fullmatch(r"[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]+", tokens[-1]):
+                    localidad = tokens[-1].strip(" .,-")
+                    domicilio = " ".join(tokens[:-1]).strip(" .,-")
+                else:
+                    domicilio = partes[0]
             break
+
+    if re.search(r"\bMENDOZA\b", up, re.IGNORECASE):
+        provincia = "Mendoza"
 
     total = None
     for i, ln in enumerate(lines):
