@@ -997,6 +997,7 @@ def parse_formato_afip_original_block(text: str):
         return None
 
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    raw = "\n".join(lines)
     t = _compact_ocr_token_text(" ".join(lines))
 
     m = re.search(
@@ -1034,6 +1035,22 @@ def parse_formato_afip_original_block(text: str):
                     continue
                 if "PUNTO DE VENTA" in cand.upper():
                     break
+                if ":" in cand:
+                    continue
+                if re.search(r"\bCUIT\b|\bDOMICILIO\b|\bCONDICI[oó]N\b", cand, re.IGNORECASE):
+                    continue
+                razon = cand
+                break
+
+    # OCR a veces deja la razón social antes del bloque "Original/Factura"
+    if not razon:
+        for ln in lines[:30]:
+            cand = re.sub(r"\s+", " ", ln).strip()
+            if _is_bad_singleton(cand):
+                continue
+            if ":" in cand:
+                continue
+            if re.search(r"\bS\.?R\.?L\.?\b|\bS\.?A\.?\b", cand, re.IGNORECASE):
                 razon = cand
                 break
 
@@ -1043,7 +1060,7 @@ def parse_formato_afip_original_block(text: str):
     fecha = None
     for ln in lines:
         ln_norm = _compact_ocr_token_text(ln)
-        fm = re.search(r"Fecha\s+de\s+Emisi[oóó0]n\s*:\s*(\d{1,2}/\d{1,2}/\d{4})", ln_norm, re.IGNORECASE)
+        fm = re.search(r"Fecha\s+(?:de\s+)?Emisi[oóó0]n\s*:\s*(\d{1,2}/\d{1,2}/\d{4})", ln_norm, re.IGNORECASE)
         if fm:
             try:
                 fecha = parse_date_flexible(fm.group(1))
@@ -1071,9 +1088,9 @@ def parse_formato_afip_original_block(text: str):
     dom_line = ""
     dom_idx = None
     for i, ln in enumerate(lines):
-        if re.search(r"Domicilio\s+Comercial\s*:", ln, re.IGNORECASE):
+        if re.search(r"Domicilio(?:\s+Comercial)?\s*:", ln, re.IGNORECASE):
             dom_idx = i
-            dom_line = re.sub(r"^Domicilio\s+Comercial\s*:\s*", "", ln, flags=re.IGNORECASE).strip()
+            dom_line = re.sub(r"^Domicilio(?:\s+Comercial)?\s*:\s*", "", ln, flags=re.IGNORECASE).strip()
             break
 
     if dom_idx is not None and dom_idx + 1 < len(lines):
@@ -1091,6 +1108,20 @@ def parse_formato_afip_original_block(text: str):
         if cm:
             cuit = format_cuit(cm.group(1))
 
+    # fallback: en varios AFIP "Original" el CUIT emisor aparece antes de "Apellido y Nombre"
+    if not cuit:
+        bloque_emisor = "\n".join(lines)
+        split = re.split(r"Apellido\s+y\s+Nombre\s*/\s*Raz[oó]n\s+Social\s*:", bloque_emisor, flags=re.IGNORECASE)
+        head = split[0] if split else bloque_emisor
+        cm = re.search(r"\bCUIT\s*:\s*([0-9]{11})\b", head, re.IGNORECASE)
+        if cm:
+            cuit = format_cuit(cm.group(1))
+
+    if not iibb:
+        im = re.search(r"Ingresos\s+Brutos\s*:\s*([0-9\.\-]+)", raw, re.IGNORECASE)
+        if im:
+            iibb = im.group(1).strip()
+
     if dom_line:
         domicilio, localidad, provincia = split_domicilio_localidad_provincia(dom_line)
 
@@ -1098,7 +1129,7 @@ def parse_formato_afip_original_block(text: str):
     for ln in lines:
         tm = re.search(r"Importe\s*Total\s*:\s*\$?\s*([0-9\.\,]+)", ln, re.IGNORECASE)
         if tm:
-            total = monto_ar_to_float(tm.group(1))
+            total = monto_to_float_any(tm.group(1))
             if total > 0:
                 break
     if total is None or total <= 0:
