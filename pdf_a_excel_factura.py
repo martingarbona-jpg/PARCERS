@@ -1505,6 +1505,113 @@ def parse_formato_hospital_ramon_carrillo(text: str):
     }
 
 
+def parse_formato_acm_factura_c(text: str):
+    """
+    ACM / Asociación Cirugía de Mendoza - FACTURA C
+    Ej OCR:
+      FACTURA C
+      C-0010-00000121
+      FECHA: 4/4/2026
+      CÓD. 11 CUIT: 30-65828784-9
+      ING. BRUTOS : 540201
+      AV ESPAÑA 694, PISO 7, MENDOZA. MENDOZA. IVA EXENTO
+      SEÑORES: OSTPCPHYARA CUIT: 30-67906538-2
+      Órdenes correspondientes al período: 11/03/2026 - 04/04/2026 $ 885.937,50
+      TOTAL $ 885.937,50
+    """
+    if not text:
+        return None
+
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    raw = "\n".join(lines)
+    up = re.sub(r"\s+", " ", raw).upper()
+
+    # Detección conservadora (evita colisiones con parsers genéricos)
+    has_factura_c = bool(re.search(r"\bFACTURA\s*C\b", up))
+    has_nro = bool(re.search(r"\bC-\s*0010-\s*\d{6,8}\b", up))
+    has_cuit_emisor = bool(re.search(r"\bCUIT\s*:\s*30\s*-\s*65828784\s*-\s*9\b", raw, re.IGNORECASE))
+    has_senores = "SEÑORES:" in up
+    has_total = bool(re.search(r"\bTOTAL\s*\$\s*\d", up))
+    if not (has_factura_c and has_nro and has_cuit_emisor and has_senores and has_total):
+        return None
+
+    m = re.search(r"\bC-\s*(\d{4})\s*-\s*(\d{6,8})\b", raw, re.IGNORECASE)
+    if not m:
+        return None
+    nro = f"{strip_leading_zeros(m.group(1))}-{strip_leading_zeros(m.group(2))}"
+
+    fecha = None
+    fm = re.search(r"\bFECHA\s*:\s*(\d{1,2}/\d{1,2}/\d{4})\b", raw, re.IGNORECASE)
+    if fm:
+        try:
+            fecha = parse_date_flexible(fm.group(1))
+        except Exception:
+            fecha = None
+
+    # Siempre tomar CUIT del emisor (el primero junto al bloque encabezado), no el de SEÑORES.
+    cuit = ""
+    cm = re.search(r"\b(?:C[ÓO]D\.\s*\d+\s+)?CUIT\s*:\s*([0-9]{2}\s*-\s*[0-9]{8}\s*-\s*[0-9])", raw, re.IGNORECASE)
+    if cm:
+        cuit = format_cuit(cm.group(1))
+
+    iibb = ""
+    im = re.search(r"\bING\.\s*BRUTOS\s*:\s*([0-9\.\-]+)\b", raw, re.IGNORECASE)
+    if im:
+        iibb = im.group(1).strip()
+
+    razon = "Asociación Cirugía de Mendoza"
+    if re.search(r"\bACM\b", up):
+        razon = "ACM"
+    if "30-65828784-9" in cuit:
+        # Preferencia solicitada para nombre completo cuando se puede inferir con alta confianza.
+        razon = "Asociación Cirugía de Mendoza"
+
+    domicilio = ""
+    localidad = ""
+    provincia = PROVINCIA_FIJA
+    dm = re.search(
+        r"\b([A-ZÁÉÍÓÚÜÑ0-9 ]+,\s*PISO\s*\d+),\s*MENDOZA\.\s*MENDOZA\.",
+        raw,
+        re.IGNORECASE
+    )
+    if dm:
+        domicilio = re.sub(r"\s+", " ", dm.group(1)).strip(" ,.")
+        localidad = "Mendoza"
+        provincia = "Mendoza"
+
+    periodo = None
+    pm = re.search(
+        r"correspondientes\s+al\s+per[ií]odo\s*:\s*(\d{1,2}/\d{1,2}/\d{4})\s*-\s*(\d{1,2}/\d{1,2}/\d{4})",
+        raw,
+        re.IGNORECASE
+    )
+    if pm:
+        try:
+            periodo = parse_date_flexible(pm.group(1))
+        except Exception:
+            periodo = None
+
+    total = None
+    tm = re.search(r"\bTOTAL\s*\$\s*([0-9\.,]+)\b", raw, re.IGNORECASE)
+    if tm:
+        total = monto_to_float_any(tm.group(1))
+    if total is None or total <= 0:
+        return None
+
+    return {
+        "nro": nro,
+        "razon": razon,
+        "cuit": cuit,
+        "iibb": iibb,
+        "domicilio": domicilio,
+        "localidad": localidad,
+        "provincia": provincia or PROVINCIA_FIJA,
+        "fecha": fecha,
+        "periodo": periodo,
+        "total": float(total)
+    }
+
+
 def parse_formato_afip(text: str):
     if not text:
         return None
@@ -1708,6 +1815,14 @@ def extraer_campos(pdf_path: str, error_dir: Path, pdf_obj: Path, debug: bool = 
         if debug:
             print("PARSER -> HOSPITAL_RAMON_CARRILLO")
             save_parse_debug(error_dir, pdf_obj, "HOSPITAL_RAMON_CARRILLO", campos, text)
+        return campos
+
+    # ✅ ACM / Asociación Cirugía de Mendoza - FACTURA C (específico, antes de genéricos)
+    campos = parse_formato_acm_factura_c(text)
+    if campos:
+        if debug:
+            print("PARSER -> ACM_FACTURA_C")
+            save_parse_debug(error_dir, pdf_obj, "ACM_FACTURA_C", campos, text)
         return campos
 
     campos = parse_formato_afip(text)
