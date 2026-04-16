@@ -141,7 +141,13 @@ def unique_path(path: Path) -> Path:
 
 
 def parse_date_flexible(s: str) -> datetime:
-    return datetime.strptime(s.strip(), "%d/%m/%Y")
+    s = (s or "").strip()
+    for fmt in ("%d/%m/%Y", "%d.%m.%Y"):
+        try:
+            return datetime.strptime(s, fmt)
+        except Exception:
+            continue
+    raise ValueError(f"Fecha inválida: {s}")
 
 
 def parse_date_dash(s: str) -> datetime:
@@ -1612,6 +1618,104 @@ def parse_formato_acm_factura_c(text: str):
     }
 
 
+def parse_formato_global_med(text: str):
+    """
+    Global MED S.A. - Factura B (formato específico y conservador).
+    """
+    if not text:
+        return None
+
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    raw = "\n".join(lines)
+    up = re.sub(r"\s+", " ", raw).upper()
+
+    # Detección conservadora: deben cumplirse todas
+    if "GLOBAL MED" not in up:
+        return None
+    if "COMPROBANTE NRO" not in up:
+        return None
+    if "TOTAL $" not in up:
+        return None
+    if not re.search(r"\bC\.?\s*U\.?\s*I\.?\s*T\.?\b", raw, re.IGNORECASE):
+        return None
+    if "INGRESOS BRUTOS" not in up:
+        return None
+
+    # Número: Comprobante Nro. 00005-00150538 -> 5-150538
+    m = re.search(r"Comprobante\s+Nro\.?\s*(\d+)\s*-\s*(\d+)", raw, re.IGNORECASE)
+    if not m:
+        return None
+    nro = f"{strip_leading_zeros(m.group(1))}-{strip_leading_zeros(m.group(2))}"
+
+    razon = "Global MED S.A."
+
+    cuit = ""
+    cm = re.search(
+        r"\bC\.?\s*U\.?\s*I\.?\s*T\.?\s*[: ]\s*([0-9]{2}\s*-\s*[0-9]{8}\s*-\s*[0-9]|[0-9]{11})",
+        raw,
+        re.IGNORECASE
+    )
+    if cm:
+        cuit = format_cuit(cm.group(1))
+
+    iibb = ""
+    im = re.search(r"Ingresos\s+Brutos\s*:\s*([0-9\.\-]+)", raw, re.IGNORECASE)
+    if im:
+        iibb = im.group(1).strip()
+
+    domicilio = ""
+    localidad = ""
+    provincia = "Mendoza"
+    for i, ln in enumerate(lines):
+        if re.search(r"\bGLOBAL\s+MED\b", ln, re.IGNORECASE):
+            if i + 1 < len(lines):
+                domicilio = re.sub(r"\s+", " ", lines[i + 1]).strip(" ,.-")
+            if i + 2 < len(lines):
+                loc_line = re.sub(r"\s+", " ", lines[i + 2]).strip()
+                mloc = re.match(r"([A-Za-zÁÉÍÓÚÜÑáéíóúüñ ]+)", loc_line)
+                if mloc:
+                    localidad = mloc.group(1).strip(" ,.-")
+            break
+
+    fecha = None
+    fm = re.search(r"\bFecha\s*:\s*(\d{1,2}[\/\.]\d{1,2}[\/\.]\d{4})", raw, re.IGNORECASE)
+    if fm:
+        try:
+            fecha = parse_date_flexible(fm.group(1).replace(".", "/"))
+        except Exception:
+            fecha = None
+
+    periodo = None
+    pm = re.search(r"\bPERIODO\s*:\s*(\d{2})(\d{4})\b", raw, re.IGNORECASE)
+    if pm:
+        try:
+            mm = int(pm.group(1))
+            yy = int(pm.group(2))
+            periodo = datetime(yy, mm, 1)
+        except Exception:
+            periodo = None
+
+    total = None
+    tm = re.search(r"\bTOTAL\s*\$\s*([0-9\.\,]+)", raw, re.IGNORECASE)
+    if tm:
+        total = monto_to_float_any(tm.group(1))
+    if total is None or total <= 0:
+        return None
+
+    return {
+        "nro": nro,
+        "razon": razon,
+        "cuit": cuit,
+        "iibb": iibb,
+        "domicilio": domicilio,
+        "localidad": localidad,
+        "provincia": provincia,
+        "fecha": fecha,
+        "periodo": periodo,
+        "total": float(total)
+    }
+
+
 def parse_formato_afip(text: str):
     if not text:
         return None
@@ -1793,6 +1897,14 @@ def extraer_campos(pdf_path: str, error_dir: Path, pdf_obj: Path, debug: bool = 
         if debug:
             print("PARSER -> NUTRIHOME")
             save_parse_debug(error_dir, pdf_obj, "NUTRIHOME", campos, text)
+        return campos
+
+    # ✅ Global MED S.A. (específico, antes de genéricos)
+    campos = parse_formato_global_med(text)
+    if campos:
+        if debug:
+            print("PARSER -> GLOBAL_MED")
+            save_parse_debug(error_dir, pdf_obj, "GLOBAL_MED", campos, text)
         return campos
 
     campos = parse_formato_afip_original_block(text)
