@@ -1716,6 +1716,87 @@ def parse_formato_global_med(text: str):
     }
 
 
+
+
+def parse_formato_sociedad_urologia(text: str):
+    """
+    Parser específico para facturas C de SOCIEDAD DE UROLOGIA DE MENDOZA.
+    Conservador: solo activa con señales de encabezado AFIP + razón social objetivo.
+    """
+    if not text:
+        return None
+
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    raw = "\n".join(lines)
+    up = re.sub(r"\s+", " ", raw).upper()
+
+    required_signals = [
+        "SOCIEDAD DE UROLOGIA",
+        "PUNTO DE VENTA",
+        "COMP. NRO",
+        "RAZÓN SOCIAL",
+        "TOTAL"
+    ]
+    if not all(sig in up for sig in required_signals):
+        return None
+
+    nro_m = re.search(r"Punto\s*de\s*Venta\s*:\s*(\d+)\s*Comp\.?\s*Nro\.?\s*[:.]?\s*(\d+)", raw, re.IGNORECASE)
+    if not nro_m:
+        return None
+    nro = f"{strip_leading_zeros(nro_m.group(1))}-{strip_leading_zeros(nro_m.group(2))}"
+
+    razon_m = re.search(r"Raz[oó]n\s+Social\s*:\s*(.+?)\s+Fecha\s+de\s+Emisi[oó]n\s*:", raw, re.IGNORECASE)
+    razon = re.sub(r"\s+", " ", razon_m.group(1)).strip() if razon_m else ""
+
+    fecha = None
+    fecha_m = re.search(r"Fecha\s+de\s+Emisi[oó]n\s*:\s*(\d{1,2}/\d{1,2}/\d{4})", raw, re.IGNORECASE)
+    if fecha_m:
+        try:
+            fecha = parse_date_flexible(fecha_m.group(1))
+        except Exception:
+            fecha = None
+
+    cuit = ""
+    cuit_m = re.search(
+        r"Condici[oó]n\s+frente\s+al\s+IVA\s*:\s*.*?C\.?U\.?I\.?T\s*:\s*([0-9]{2}\s*[-]?\s*[0-9]{8}\s*[-]?\s*[0-9])",
+        raw,
+        re.IGNORECASE,
+    )
+    if cuit_m:
+        cuit = format_cuit(cuit_m.group(1))
+
+    iibb = ""
+    iibb_m = re.search(r"Ingresos\s+Brutos\s*:\s*([^\n]+)", raw, re.IGNORECASE)
+    if iibb_m:
+        iibb = re.sub(r"\s+", " ", iibb_m.group(1)).strip().split(" ")[0]
+
+    domicilio = ""
+    domicilio_m = re.search(r"Domicilio\s+comercial\s*:\s*(.+?)\s+Ingresos\s+Brutos\s*:", raw, re.IGNORECASE)
+    if domicilio_m:
+        domicilio = re.sub(r"\s+", " ", domicilio_m.group(1)).strip()
+
+    total = None
+    total_m = re.search(r"\bTotal\s*:\s*\$\s*([0-9\.\,]+)", raw, re.IGNORECASE)
+    if total_m:
+        total = monto_to_float_any(total_m.group(1))
+    if total is None or total <= 0:
+        return None
+
+    if not razon:
+        razon = "SOCIEDAD DE UROLOGIA DE MENDOZA"
+
+    return {
+        "nro": nro,
+        "razon": razon,
+        "cuit": cuit,
+        "iibb": iibb,
+        "domicilio": domicilio,
+        "localidad": "Mendoza",
+        "provincia": "Mendoza",
+        "fecha": fecha,
+        "periodo": None,
+        "total": float(total)
+    }
 def parse_formato_afip(text: str):
     if not text:
         return None
@@ -1935,6 +2016,14 @@ def extraer_campos(pdf_path: str, error_dir: Path, pdf_obj: Path, debug: bool = 
         if debug:
             print("PARSER -> ACM_FACTURA_C")
             save_parse_debug(error_dir, pdf_obj, "ACM_FACTURA_C", campos, text)
+        return campos
+
+    # ✅ Sociedad de Urología de Mendoza - FACTURA C (específico, antes de genéricos)
+    campos = parse_formato_sociedad_urologia(text)
+    if campos:
+        if debug:
+            print("PARSER -> SOCIEDAD_UROLOGIA")
+            save_parse_debug(error_dir, pdf_obj, "SOCIEDAD_UROLOGIA", campos, text)
         return campos
 
     campos = parse_formato_afip(text)
