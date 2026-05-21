@@ -2084,6 +2084,13 @@ def main():
         wb = openpyxl.load_workbook(args.plantilla)
         ws = wb.active
 
+        hoy = datetime.now()
+        fecha_encabezado = month_start(hoy)
+        fecha_realizacion = prev_month_start(fecha_encabezado)
+
+        ws["A3"] = fecha_encabezado
+        ws["A3"].number_format = "mmm-yy"
+
         set_proveedor_en_A8(ws, campos["razon"])
 
         ws["A11"] = f"Cuit: {campos['cuit']}"
@@ -2100,17 +2107,18 @@ def main():
         if fila is None:
             raise RuntimeError("No hay filas libres entre 9 y 21.")
 
-        base_mes = month_start(campos["periodo"] or campos["fecha"])
-        realiz = prev_month_start(base_mes) if base_mes else None
+        print("DEBUG FECHAS:")
+        print("Fecha encabezado A3:", fecha_encabezado)
+        print("Fecha realización B:", fecha_realizacion)
+        print("Fecha emisión F:", campos.get("fecha"))
 
-        ws[f"B{fila}"] = realiz
+        ws[f"B{fila}"] = fecha_realizacion
         ws[f"C{fila}"] = campos["nro"]
         ws[f"D{fila}"] = campos["total"]
         ws[f"E{fila}"] = 0.0
         ws[f"F{fila}"] = campos["fecha"]
 
-        if realiz:
-            ws[f"B{fila}"].number_format = "dd/mm/yyyy"
+        ws[f"B{fila}"].number_format = "mmm-yy"
         ws[f"D{fila}"].number_format = "#,##0.00"
         ws[f"E{fila}"].number_format = "#,##0.00"
         if campos["fecha"]:
