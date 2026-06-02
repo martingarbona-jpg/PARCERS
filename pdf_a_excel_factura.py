@@ -464,6 +464,135 @@ def _compact_ocr_token_text(text: str) -> str:
     return s
 
 
+def parse_formato_asaar_sanjuan(text: str):
+    """
+    A.S.A.A.R. - Asociacion Sanjuanina de Anestesia, Analgesia y Reanimacion
+    Ej:
+      C FACTURA
+      N°.: 0005 - 00009948
+      Fecha de Emisión: 02/06/2026
+      CUIT.:30-67329964-0
+      ING. BRUTOS.:000-045-661-7
+      Aberastain N° 79
+      San Juan - San Juan
+      ... correspondientes a 5 / 2026 y meses anteriores
+      Neto Exento: $573.199,07 ***** Total I.V.A: $0,00 $573.199,07
+    """
+    if not text:
+        return None
+
+    text = text.replace("\u00a0", " ").replace("Â°", "°").replace("Âº", "°")
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    raw = "\n".join(lines)
+    up = re.sub(r"\s+", " ", raw).upper()
+    compact_up = re.sub(r"[^A-Z0-9]", "", up)
+
+    # Deteccion combinada y conservadora para evitar colisiones.
+    if not (
+        ("A.S.A.A.R" in up or "ASAAR" in compact_up)
+        and ("ASOCIACI" in up and "SANJUANINA" in up)
+        and ("ANESTESIA" in up and "ANALGESIA" in up and "REANIMACI" in up)
+        and "FACTURA" in up
+    ):
+        return None
+
+    # Numero
+    m = re.search(
+        r"\bN\s*(?:[°º]\s*\.?|RO\.?)?\s*:?\s*(\d{4,5})\s*-\s*(\d{6,8})",
+        raw,
+        re.IGNORECASE,
+    )
+    if not m:
+        m = re.search(r"\b(\d{4,5})\s*-\s*(\d{6,8})\b", raw)
+    if not m:
+        return None
+
+    nro = f"{strip_leading_zeros(m.group(1))}-{strip_leading_zeros(m.group(2))}"
+
+    # Fecha
+    fecha = None
+    fm = re.search(r"Fecha\s+de\s+Emisi\S*n\s*:?\s*(\d{1,2}/\d{1,2}/\d{4})", raw, re.IGNORECASE)
+    if fm:
+        try:
+            fecha = parse_date_flexible(fm.group(1))
+        except Exception:
+            fecha = None
+
+    razon = "Asociación Sanjuanina de Anestesia, Analgesia y Reanimación"
+
+    # CUIT
+    cuit = ""
+    cm = re.search(r"CUIT\.?\s*:\s*([0-9]{2}\s*[-]?\s*[0-9]{8}\s*[-]?\s*[0-9])", raw, re.IGNORECASE)
+    if cm:
+        cuit = format_cuit(cm.group(1))
+
+    # IIBB
+    iibb = ""
+    im = re.search(r"ING\.?\s*BRUTOS\.?\s*:\s*([0-9\.\-]+)", raw, re.IGNORECASE)
+    if im:
+        iibb = im.group(1).strip()
+
+    # Domicilio / localidad / provincia
+    domicilio = ""
+    localidad = "San Juan"
+    provincia = "San Juan"
+
+    for ln in lines:
+        if re.search(r"Aberastain", ln, re.IGNORECASE):
+            domicilio = re.sub(r"\s+", " ", ln).strip()
+            break
+
+    for ln in lines:
+        if re.search(r"San\s+Juan\s*-\s*San\s+Juan", ln, re.IGNORECASE):
+            localidad = "San Juan"
+            provincia = "San Juan"
+            break
+
+    # Periodo: "a 5 / 2026 y meses anteriores"
+    periodo = None
+    pm = re.search(r"\ba\s+(\d{1,2})\s*/\s*(20\d{2})\s+y\s+meses\s+anteriores", raw, re.IGNORECASE)
+    if not pm:
+        pm = re.search(r"correspondientes\s+a\s+(\d{1,2})\s*/\s*(20\d{2})", raw, re.IGNORECASE)
+    if pm:
+        try:
+            mm = int(pm.group(1))
+            yy = int(pm.group(2))
+            if 1 <= mm <= 12:
+                periodo = datetime(yy, mm, 1)
+        except Exception:
+            periodo = None
+
+    # Total: tomar el ultimo importe en linea de Neto Exento / Total I.V.A.
+    total = None
+    for ln in lines:
+        if re.search(r"Neto\s+Exento", ln, re.IGNORECASE) and re.search(r"Total\s+I\.?\s*V\.?\s*A", ln, re.IGNORECASE):
+            nums = re.findall(r"\$\s*([0-9\.\,]+)", ln)
+            if nums:
+                total = monto_to_float_any(nums[-1])
+                break
+
+    # Fallback: mayor importe encontrado.
+    if total is None or total <= 0:
+        amts = _find_money_amounts_any(lines)
+        total = max(amts) if amts else None
+
+    if total is None or total <= 0:
+        return None
+
+    return {
+        "nro": nro,
+        "razon": razon,
+        "cuit": cuit,
+        "iibb": iibb,
+        "domicilio": domicilio,
+        "localidad": localidad,
+        "provincia": provincia,
+        "fecha": fecha,
+        "periodo": periodo,
+        "total": float(total),
+    }
+
+
 def parse_formato_ama(text: str):
     """
     A.M.A - Asociación Mendocina de Anestesiología
@@ -1939,6 +2068,14 @@ def parse_formato_nuevo(text: str):
 
 def extraer_campos(pdf_path: str, error_dir: Path, pdf_obj: Path, debug: bool = False):
     text = read_pdf_text_first_page(pdf_path)
+
+    # ✅ A.S.A.A.R. / Asociacion Sanjuanina de Anestesia, Analgesia y Reanimacion
+    campos = parse_formato_asaar_sanjuan(text)
+    if campos:
+        if debug:
+            print("PARSER -> ASAAR_SANJUAN")
+            save_parse_debug(error_dir, pdf_obj, "ASAAR_SANJUAN", campos, text)
+        return campos
 
     # ✅ NUEVO: A.M.A
     campos = parse_formato_ama(text)
