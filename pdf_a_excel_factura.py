@@ -1926,6 +1926,105 @@ def parse_formato_sociedad_urologia(text: str):
         "periodo": None,
         "total": float(total)
     }
+
+
+def parse_formato_circulo_kinesiologos(text: str):
+    """
+    Circulo de Kinesiologos y Fisioterapeutas de Mendoza - Factura C.
+    """
+    if not text:
+        return None
+
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    raw = "\n".join(lines)
+    up = re.sub(r"\s+", " ", raw).upper()
+
+    # Deteccion conservadora: estas senales identifican conjuntamente al emisor.
+    if "CIRCULO DE KINESIOLOGOS" not in up:
+        return None
+    if not re.search(r"\bFACTURA\s+C\b", up):
+        return None
+    if "NRO. ESTAB." not in up:
+        return None
+    if "CAE VTO" not in up:
+        return None
+
+    nm = re.search(
+        r"Factura\s+C\s+N[^:\d]*:\s*(\d+)\s*-\s*(\d+)",
+        raw,
+        re.IGNORECASE
+    )
+    if not nm:
+        return None
+    nro = f"{strip_leading_zeros(nm.group(1))}-{strip_leading_zeros(nm.group(2))}"
+
+    fecha = None
+    fm = re.search(r"(?im)^Fecha\s*:\s*(\d{1,2}/\d{1,2}/\d{4})\s*$", raw)
+    if fm:
+        try:
+            fecha = parse_date_flexible(fm.group(1))
+        except Exception:
+            fecha = None
+
+    # El CUIT queda acotado a la linea del emisor, antes del bloque del cliente.
+    cuit = ""
+    cm = re.search(
+        r"(?im)^CIRCULO\s+DE\s+KINESIOLOGOS[^\n]*\bCUIT\s*:\s*([0-9 -]+)\s*$",
+        raw
+    )
+    if cm:
+        cuit = format_cuit(cm.group(1))
+    if not cuit:
+        return None
+
+    iibb = ""
+    im = re.search(r"\bING\.\s*BRUTOS\s*:\s*([0-9.\-]+)", raw, re.IGNORECASE)
+    if im:
+        iibb = im.group(1).strip()
+
+    domicilio = ""
+    dm = re.search(r"(?im)^(.+?)\s+MENDOZA\s+MENDOZA\s*$", raw)
+    if dm:
+        domicilio = re.sub(r"\s+", " ", dm.group(1)).strip(" ,.")
+
+    meses = {
+        "ENERO": 1, "FEBRERO": 2, "MARZO": 3, "ABRIL": 4,
+        "MAYO": 5, "JUNIO": 6, "JULIO": 7, "AGOSTO": 8,
+        "SEPTIEMBRE": 9, "SETIEMBRE": 9, "OCTUBRE": 10,
+        "NOVIEMBRE": 11, "DICIEMBRE": 12
+    }
+    periodo = None
+    pm = re.search(
+        r"\bPRESTACIONES\s+MES\s+DE\s+([A-Z]+)\s+(20\d{2})\b",
+        up
+    )
+    if pm and pm.group(1) in meses:
+        periodo = datetime(int(pm.group(2)), meses[pm.group(1)], 1)
+
+    tm = re.search(
+        r"(?im)^TOTAL\s*:?\s*$\n^\s*\$\s*([0-9.,]+)\s*$",
+        raw
+    )
+    if not tm:
+        return None
+    total = monto_to_float_any(tm.group(1))
+    if total <= 0:
+        return None
+
+    return {
+        "nro": nro,
+        "razon": "CIRCULO DE KINESIOLOGOS Y FISOTERAPEUTAS DE MENDOZA",
+        "cuit": cuit,
+        "iibb": iibb,
+        "domicilio": domicilio,
+        "localidad": "Mendoza",
+        "provincia": "Mendoza",
+        "fecha": fecha,
+        "periodo": periodo,
+        "total": float(total)
+    }
+
+
 def parse_formato_afip(text: str):
     if not text:
         return None
@@ -2161,6 +2260,14 @@ def extraer_campos(pdf_path: str, error_dir: Path, pdf_obj: Path, debug: bool = 
         if debug:
             print("PARSER -> SOCIEDAD_UROLOGIA")
             save_parse_debug(error_dir, pdf_obj, "SOCIEDAD_UROLOGIA", campos, text)
+        return campos
+
+    # Circulo de Kinesiologos - FACTURA C (especifico, antes de genericos)
+    campos = parse_formato_circulo_kinesiologos(text)
+    if campos:
+        if debug:
+            print("PARSER -> CIRCULO_KINESIOLOGOS")
+            save_parse_debug(error_dir, pdf_obj, "CIRCULO_KINESIOLOGOS", campos, text)
         return campos
 
     campos = parse_formato_afip(text)
