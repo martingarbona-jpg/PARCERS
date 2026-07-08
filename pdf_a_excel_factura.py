@@ -3,6 +3,7 @@ import re
 import io
 import shutil
 import argparse
+import unicodedata
 from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Optional, Tuple
@@ -2025,6 +2026,126 @@ def parse_formato_circulo_kinesiologos(text: str):
     }
 
 
+def parse_formato_cme_circulo_medico_este(text: str):
+    """
+    C.M.E / Circulo Medico del Este - Factura B.
+    """
+    if not text:
+        return None
+
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    raw = "\n".join(lines)
+    flat = re.sub(r"\s+", " ", raw)
+
+    def sin_acentos(s: str) -> str:
+        return "".join(
+            ch for ch in unicodedata.normalize("NFD", s or "")
+            if unicodedata.category(ch) != "Mn"
+        )
+
+    up = sin_acentos(flat).upper()
+
+    # Deteccion conservadora: requiere senales propias de este comprobante.
+    if not (
+        re.search(r"\bC\.?\s*M\.?\s*E\b", up)
+        and ("CIRCULO MEDICO DEL ESTE" in up or re.search(r"C.RCULO\s+M.DICO\s+DEL\s+ESTE", up))
+        and re.search(r"\bN\s*(?:[\u00b0\u00ba?]|\u00c2[\u00b0\u00ba])\s*\.?\s*:", flat, re.IGNORECASE)
+        and ("FECHA DE EMISION" in up or re.search(r"FECHA\s+DE\s+EMISI.N", up))
+        and "NETO EXENTO" in up
+        and re.search(r"\bCAE\b", up)
+    ):
+        return None
+
+    nm = re.search(
+        r"\bN\s*(?:[\u00b0\u00ba?]|\u00c2[\u00b0\u00ba])\s*\.?\s*:\s*(\d+)\s*-\s*(\d+)",
+        flat,
+        re.IGNORECASE,
+    )
+    if not nm:
+        return None
+    nro = f"{strip_leading_zeros(nm.group(1))}-{strip_leading_zeros(nm.group(2))}"
+
+    fecha = None
+    fm = re.search(r"Fecha\s+de\s+Emisi\S*n\s*:\s*(\d{1,2}/\d{1,2}/\d{4})", raw, re.IGNORECASE)
+    if fm:
+        try:
+            fecha = parse_date_flexible(fm.group(1))
+        except Exception:
+            fecha = None
+
+    header = raw
+    cliente_m = re.search(r"\bSr\.?/es\s*:", raw, re.IGNORECASE)
+    if cliente_m:
+        header = raw[:cliente_m.start()]
+
+    cuit = ""
+    cm = re.search(r"\bCUIT\.?\s*:\s*([0-9]{2}\s*[-]?\s*[0-9]{8}\s*[-]?\s*[0-9])", header, re.IGNORECASE)
+    if cm:
+        cuit = format_cuit(cm.group(1))
+    if not cuit:
+        return None
+
+    iibb = ""
+    im = re.search(r"\bING\.?\s*BRUTOS\.?\s*:\s*([0-9.\-]+)", header, re.IGNORECASE)
+    if im:
+        iibb = im.group(1).strip()
+
+    domicilio = "AVELLANEDA 321"
+    localidad = "San Martin"
+    provincia = "Mendoza"
+    dm = re.search(
+        r"(?im)^\s*(AVELLANEDA\s+321)\s*-\s*SAN\s+MARTIN\s*-\s*MENDOZA\b",
+        raw,
+    )
+    if dm:
+        domicilio = re.sub(r"\s+", " ", dm.group(1)).strip()
+
+    meses = {
+        "ENERO": 1, "FEBRERO": 2, "MARZO": 3, "ABRIL": 4,
+        "MAYO": 5, "JUNIO": 6, "JULIO": 7, "AGOSTO": 8,
+        "SEPTIEMBRE": 9, "SETIEMBRE": 9, "OCTUBRE": 10,
+        "NOVIEMBRE": 11, "DICIEMBRE": 12,
+    }
+    periodo = None
+    pm = re.search(r"Facturaci\S*n\s+correspondiente\s+al\s+per\S*odo\s+(\d{1,2})\s*/\s*(20\d{2})", raw, re.IGNORECASE)
+    if pm:
+        try:
+            mm = int(pm.group(1))
+            yy = int(pm.group(2))
+            if 1 <= mm <= 12:
+                periodo = datetime(yy, mm, 1)
+        except Exception:
+            periodo = None
+
+    if periodo is None:
+        pmm = re.search(r"\bPERIODO\s+([A-Z\u00c1\u00c9\u00cd\u00d3\u00da\u00dc\u00d1]+)\s+(20\d{2})\b", sin_acentos(raw).upper())
+        if pmm and pmm.group(1) in meses:
+            periodo = datetime(int(pmm.group(2)), meses[pmm.group(1)], 1)
+
+    total = None
+    for ln in lines:
+        if re.search(r"Neto\s+Exento", ln, re.IGNORECASE) and re.search(r"Total\s+I\.?\s*V\.?\s*A", ln, re.IGNORECASE):
+            nums = re.findall(r"\$\s*([0-9\.\,]+)", ln)
+            if nums:
+                total = monto_to_float_any(nums[-1])
+                break
+    if total is None or total <= 0:
+        return None
+
+    return {
+        "nro": nro,
+        "razon": "C\u00edrculo M\u00e9dico del Este",
+        "cuit": cuit,
+        "iibb": iibb,
+        "domicilio": domicilio,
+        "localidad": localidad,
+        "provincia": provincia,
+        "fecha": fecha,
+        "periodo": periodo,
+        "total": float(total),
+    }
+
+
 def parse_formato_afip(text: str):
     if not text:
         return None
@@ -2268,6 +2389,14 @@ def extraer_campos(pdf_path: str, error_dir: Path, pdf_obj: Path, debug: bool = 
         if debug:
             print("PARSER -> CIRCULO_KINESIOLOGOS")
             save_parse_debug(error_dir, pdf_obj, "CIRCULO_KINESIOLOGOS", campos, text)
+        return campos
+
+    # C.M.E / Circulo Medico del Este - FACTURA B (especifico, antes de genericos)
+    campos = parse_formato_cme_circulo_medico_este(text)
+    if campos:
+        if debug:
+            print("PARSER -> CME_CIRCULO_MEDICO_ESTE")
+            save_parse_debug(error_dir, pdf_obj, "CME_CIRCULO_MEDICO_ESTE", campos, text)
         return campos
 
     campos = parse_formato_afip(text)
