@@ -2286,6 +2286,86 @@ def parse_formato_nuevo(text: str):
     }
 
 
+def parse_formato_distrifar(text: str):
+    """
+    DISTRIFAR SA - Factura B.
+    """
+    if not text:
+        return None
+
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    raw = "\n".join(lines)
+    flat = re.sub(r"\s+", " ", raw)
+    up = flat.upper()
+
+    # Deteccion conservadora: requiere senales propias de este comprobante.
+    if not (
+        "DISTRIFAR SA" in up
+        and re.search(r"\bComprobante\s*:\s*B", flat, re.IGNORECASE)
+        and re.search(r"\bIngresos\s+Brutos\s*:", flat, re.IGNORECASE)
+        and re.search(r"\bPERC\s+IIBB\b", flat, re.IGNORECASE)
+        and re.search(r"\bTOTAL\b", flat, re.IGNORECASE)
+        and re.search(r"\bCAE\b", flat, re.IGNORECASE)
+    ):
+        return None
+
+    nm = re.search(r"\bComprobante\s*:\s*B\s*(\d+)\s*-\s*(\d+)\b", flat, re.IGNORECASE)
+    if not nm:
+        return None
+    nro = f"{strip_leading_zeros(nm.group(1))}-{strip_leading_zeros(nm.group(2))}"
+
+    fecha = None
+    fm = re.search(r"\bFecha\s*:\s*(\d{1,2}/\d{1,2}/\d{4})\b", flat, re.IGNORECASE)
+    if fm:
+        try:
+            fecha = parse_date_flexible(fm.group(1))
+        except Exception:
+            fecha = None
+
+    header = raw
+    cliente_m = re.search(r"\bCliente\s*:", raw, re.IGNORECASE)
+    if cliente_m:
+        header = raw[:cliente_m.start()]
+
+    cuit = ""
+    cm = re.search(r"\bCUIT\s*:\s*([0-9]{2}\s*-\s*[0-9]{8}\s*-\s*[0-9])", header, re.IGNORECASE)
+    if cm:
+        cuit = format_cuit(cm.group(1))
+
+    iibb = ""
+    im = re.search(r"\bIngresos\s+Brutos\s*:\s*([0-9]{3}\s*-\s*[0-9]{6}\s*-\s*[0-9])", header, re.IGNORECASE)
+    if im:
+        iibb = re.sub(r"\s+", "", im.group(1))
+
+    domicilio = ""
+    dm = re.search(r"(?im)^\s*(Montecaseros\s+1357)\s*[-]?\s*(?:\(\s*5550\s*\))?", header)
+    if dm:
+        domicilio = re.sub(r"\s+", " ", dm.group(1)).strip()
+
+    total = None
+    tm = re.search(r"\bTOTAL\b\s*\$?\s*([0-9][0-9\.,]*)", raw, re.IGNORECASE)
+    if tm:
+        total = monto_to_float_any(tm.group(1))
+    if total is None or total <= 0:
+        return None
+
+    if not cuit or not iibb:
+        return None
+
+    return {
+        "nro": nro,
+        "razon": "DISTRIFAR SA",
+        "cuit": cuit,
+        "iibb": iibb,
+        "domicilio": domicilio,
+        "localidad": "Mendoza",
+        "provincia": "Mendoza",
+        "fecha": fecha,
+        "periodo": None,
+        "total": float(total)
+    }
+
+
 def extraer_campos(pdf_path: str, error_dir: Path, pdf_obj: Path, debug: bool = False):
     text = read_pdf_text_first_page(pdf_path)
 
@@ -2397,6 +2477,14 @@ def extraer_campos(pdf_path: str, error_dir: Path, pdf_obj: Path, debug: bool = 
         if debug:
             print("PARSER -> CME_CIRCULO_MEDICO_ESTE")
             save_parse_debug(error_dir, pdf_obj, "CME_CIRCULO_MEDICO_ESTE", campos, text)
+        return campos
+
+    # DISTRIFAR SA - FACTURA B (especifico, antes de genericos)
+    campos = parse_formato_distrifar(text)
+    if campos:
+        if debug:
+            print("PARSER -> DISTRIFAR")
+            save_parse_debug(error_dir, pdf_obj, "DISTRIFAR", campos, text)
         return campos
 
     campos = parse_formato_afip(text)
