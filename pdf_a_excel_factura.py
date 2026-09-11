@@ -1846,6 +1846,125 @@ def parse_formato_global_med(text: str):
     }
 
 
+def parse_formato_basa(text: str):
+    """
+    BASA San Juan S.A. - Factura B.
+    Parser especifico para evitar colisiones con otros formatos similares.
+    """
+    if not text:
+        return None
+
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    raw = "\n".join(lines)
+    flat = re.sub(r"\s+", " ", raw)
+    up = flat.upper()
+
+    # Deteccion conservadora: senales propias del comprobante BASA.
+    if "BASA SAN JUAN" not in up:
+        return None
+    if "COMPROBANTE NRO" not in up:
+        return None
+    if "NRO. SAP" not in up and "NRO SAP" not in up:
+        return None
+    if "TOTAL $" not in up:
+        return None
+
+    # Numero: Comprobante Nro. 00004-00012639 -> 4-12639
+    m = re.search(r"Comprobante\s+Nro\.?\s*(\d+)\s*-\s*(\d+)", raw, re.IGNORECASE)
+    if not m:
+        return None
+    nro = f"{strip_leading_zeros(m.group(1))}-{strip_leading_zeros(m.group(2))}"
+
+    header = raw
+    cliente_m = re.search(r"\bSe(?:ñ|n)ores\s*:", raw, re.IGNORECASE)
+    if cliente_m:
+        header = raw[:cliente_m.start()]
+
+    razon = "BASA San Juan S.A."
+
+    cuit = ""
+    cm = re.search(
+        r"\bC\.?\s*U\.?\s*I\.?\s*T\.?\s*[: ]\s*([0-9]{2}\s*-\s*[0-9]{8}\s*-\s*[0-9]|[0-9]{11})",
+        header,
+        re.IGNORECASE
+    )
+    if cm:
+        cuit = format_cuit(cm.group(1))
+    if not cuit:
+        return None
+
+    iibb = ""
+    im = re.search(r"Ingresos\s+Brutos\s*:\s*([0-9\.\-]+)", header, re.IGNORECASE)
+    if im:
+        iibb = im.group(1).strip()
+
+    domicilio = ""
+    localidad = ""
+    provincia = ""
+    header_lines = [ln.strip() for ln in header.splitlines() if ln.strip()]
+    for i, ln in enumerate(header_lines):
+        if re.search(r"\bBASA\s+SAN\s+JUAN\b", ln, re.IGNORECASE):
+            if i + 1 < len(header_lines):
+                dom_ln = re.sub(r"\s+", " ", header_lines[i + 1]).strip(" ,.-")
+                dm = re.match(r"(.+?\b\d+)(?:\s+\d+)?$", dom_ln)
+                domicilio = dm.group(1).strip(" ,.-") if dm else dom_ln
+            if i + 2 < len(header_lines):
+                loc_ln = re.sub(r"\s+", " ", header_lines[i + 2]).strip()
+                lm = re.match(r"([A-Za-zÁÉÍÓÚÜÑáéíóúüñ ]+)", loc_ln)
+                if lm:
+                    localidad = lm.group(1).strip(" ,.-")
+                if re.search(r"\(C\d{4}[A-Z]{3}\)", loc_ln, re.IGNORECASE) or localidad.upper() == "MONSERRAT":
+                    provincia = "CABA"
+            break
+
+    fecha = None
+    fm = re.search(r"\bFecha\s*:\s*(\d{1,2}[\/\.]\d{1,2}[\/\.]\d{4})", header, re.IGNORECASE)
+    if fm:
+        try:
+            fecha = parse_date_flexible(fm.group(1))
+        except Exception:
+            fecha = None
+
+    meses = {
+        "ENERO": 1, "FEBRERO": 2, "MARZO": 3, "ABRIL": 4,
+        "MAYO": 5, "JUNIO": 6, "JULIO": 7, "AGOSTO": 8,
+        "SEPTIEMBRE": 9, "SETIEMBRE": 9, "OCTUBRE": 10,
+        "NOVIEMBRE": 11, "DICIEMBRE": 12
+    }
+    periodo = None
+    pm = re.search(
+        r"\bAMBULATORIO\s+([A-ZÁÉÍÓÚÜÑ]+)(?:\s*-\s*([A-ZÁÉÍÓÚÜÑ]+))?\s+(20\d{2})\b",
+        up
+    )
+    if pm:
+        mes_txt = "".join(
+            ch for ch in unicodedata.normalize("NFD", pm.group(1))
+            if unicodedata.category(ch) != "Mn"
+        )
+        if mes_txt in meses:
+            periodo = datetime(int(pm.group(3)), meses[mes_txt], 1)
+
+    tm = re.search(r"\bTOTAL\s*\$\s*([0-9\.\,]+)", raw, re.IGNORECASE)
+    if not tm:
+        return None
+    total = monto_to_float_any(tm.group(1))
+    if total <= 0:
+        return None
+
+    return {
+        "nro": nro,
+        "razon": razon,
+        "cuit": cuit,
+        "iibb": iibb,
+        "domicilio": domicilio,
+        "localidad": localidad,
+        "provincia": provincia,
+        "fecha": fecha,
+        "periodo": periodo,
+        "total": float(total)
+    }
+
+
 
 
 def parse_formato_sociedad_urologia(text: str):
@@ -2423,6 +2542,14 @@ def extraer_campos(pdf_path: str, error_dir: Path, pdf_obj: Path, debug: bool = 
         if debug:
             print("PARSER -> GLOBAL_MED")
             save_parse_debug(error_dir, pdf_obj, "GLOBAL_MED", campos, text)
+        return campos
+
+    # BASA San Juan S.A. - FACTURA B (especifico, antes de genericos)
+    campos = parse_formato_basa(text)
+    if campos:
+        if debug:
+            print("PARSER -> BASA")
+            save_parse_debug(error_dir, pdf_obj, "BASA", campos, text)
         return campos
 
     campos = parse_formato_afip_original_block(text)
