@@ -1,0 +1,29 @@
+FACTURA
+C
+N° 00101 - 00001464
+Código Nro
+REFORSAL - HOSPITAL CENTRAL Cód. 011 Fecha: 16/10/2026
+ORIGINAL CUIT: 30718615700
+Razón Social:ENTE DE RECUPERACION DE FONDOS PARA EL
+Fecha Inicio Actividad: 06/06/2024
+FORTALECIMIENTO DEL SISTEMA DE SALUD
+Condición Frende al IVA: IVA Exento
+Rafael Cubillos 2056 Piso 3 Dpto. 302- Godoy Cruz - CP 5501-
+Pág.: 1 de 1
+DATOS DEL CLIENTE
+Cliente:OS PASTELEROS, PIZZEROS Y ALFAJOREROS C.U.I.T.: 30679065382
+Domicilio:Salta 2278, Ciudad - Mendoza - MENDOZA Condición Frente al IVA: IVA Exento
+Cond. de Venta:30 DÍAS
+Obs.: Periodo de Facturacion 03-09-2025 a 11-04-2026
+Cantidad Descripción Pr. Unitario Importe
+1 Servicios Asistenciales Remito Nro. 83664 19.500,00 19.500,00
+Obs.: Remito Nro. 83664
+1 Servicios Asistenciales Remito Nro. 83566 77.881,44 77.881,44
+Obs.: Remito Nro. 83566
+1 Servicios Asistenciales Remito Nro. 83510 5.779.749,66 5.779.749,66
+Obs.: Remito Nro. 83510
+Subtotal: 5.877.131,10
+Total AR 5.877.131,10
+Son Pesos Recibí la cantidad de pesos CINCO MILLONES OCHOCIENTOS SETENTA
+Y SIETE MIL CIENTO TREINTA Y UNO CON 10 CENTAVOS
+C.A.E. N°: 86427962363438 Fecha Vto: 26/10/2026

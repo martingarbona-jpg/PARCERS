@@ -1,0 +1,26 @@
+C Factura
+Código Nro
+011
+REFORSAL - WS-H. HUMBERTO NOTTI
+Fecha: 06/04/2026
+Nro.:00102 - 00000956
+RAZON SOCIAL: ENTE DE RECUPERACION DE FONDOS
+CUIT: 30-71861570-0
+PARA EL FORTALECIMIENTO DEL SISTEMA DE SALUD
+RAFAEL CUBILLOS 2056 3 302
+Inicio Actividades: 06/06/2024
+5501 - GODOY CRUZ Mendoza
+IVA: Exento
+OBRA SOCIAL TRABAJADORES PASTELEROS, CO C.U.I.T.: 30-67906538-2
+Salta 2278, Ciudad
+5500 - Ciudad de Mendoza
+IVA: Exento
+Cond. de Venta: CC
+Cantidad Descripcion Pr. Unitario Importe
+1 Servicios Asistenciales Remito Nro. 58975 6.851.677,79 6.851.677,79
+Periodo de Facturacion 27-05-2025 a 24-06-2025
+Subtotal 6.851.677,79
+Total $ 6.851.677,79
+Son Pesos Seis millones ochocientos cincuenta y un mil seiscientos setenta y siete con 79/100
+Fecha Vto: 16/04/26 C.A.E. N°86140415601452
+Original
